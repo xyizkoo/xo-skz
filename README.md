@@ -1,2 +1,1 @@
-# xo-skz
-Skriptz
+![](./gfx/x.webp)
