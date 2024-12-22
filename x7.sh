@@ -11,4 +11,3 @@ Pin-Priority: 1000
 ' | sudo tee /etc/apt/preferences.d/mozilla 
 sudo apt-get update -y 
 sudo apt-get install firefox -y
-sudo flatpak install flathub com.vscodium.codium
