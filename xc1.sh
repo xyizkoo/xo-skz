@@ -91,9 +91,6 @@ install_fzf() {
     # Auto-accept the install script
     yes | /home/linuxbrew/.linuxbrew/opt/fzf/install
     
-    # fzf_key_bindings is automatically set up by the install script
-    # No need for separate command
-    
     log_info "fzf installed and configured"
 }
 
@@ -305,13 +302,13 @@ main() {
     
     # Install Homebrew first (needed for fzf)
     install_homebrew
-    install_fzf               # fzf installed via Homebrew
+    install_fzf
     
     install_fish
     install_rust
     install_go
     install_cargo_pkgs
-    setup_starship            # This now includes Homebrew in fish config
+    setup_starship
     install_uv_bun
     install_witr
     
@@ -346,10 +343,5 @@ main() {
     log_info "Restart your shell or run: exec fish"
 }
 
-# Run it - fixed for curl pipe
-if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-else
-    # Running from curl pipe or sourced
-    main "$@"
-fixc1 fix
+# Run it
+main "$@"
