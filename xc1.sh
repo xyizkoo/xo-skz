@@ -1,0 +1,321 @@
+#!/bin/bash
+#
+# Complete System Setup Script - Fully Unattended
+# Usage: curl -sSL https://your-server.com/setup.sh | sudo bash
+#
+
+set -euo pipefail
+
+# Disable ALL interactive prompts
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export APT_LISTCHANGES_FRONTEND=none
+export UCF_FORCE_CONFFOLD=1
+export DEBCONF_NONINTERACTIVE_SEEN=true
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Logging functions
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# Check root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Must be root. Use: sudo bash $0"
+    fi
+}
+
+# Configure apt for full auto-yes
+configure_apt() {
+    log_info "Configuring apt for unattended installation..."
+    
+    echo 'APT::Get::Assume-Yes "true";' > /etc/apt/apt.conf.d/00autoaccept
+    echo 'APT::Get::force-yes "true";' >> /etc/apt/apt.conf.d/00autoaccept
+    echo 'DPkg::Options {"--force-confdef";"--force-confold";};' > /etc/apt/apt.conf.d/99force-conf
+}
+
+# Update system
+update_system() {
+    log_info "Updating system..."
+    apt-get update -y
+    apt-get upgrade -y
+    apt-get dist-upgrade -y
+    apt-get autoremove -y
+    apt-get autoclean -y
+    apt-get clean -y
+    log_info "System updated"
+}
+
+# Install base packages
+install_base() {
+    log_info "Installing base packages..."
+    apt-get install -y \
+        wget curl gnupg software-properties-common \
+        git build-essential unzip zip gpg-agent \
+        ca-certificates sudo magic-wormhole shellcheck \
+        openssh-server
+    log_info "Base packages installed"
+}
+
+# Install Fish shell
+install_fish() {
+    log_info "Installing Fish shell v4..."
+    
+    add-apt-repository ppa:fish-shell/release-4 -y
+    apt-get update -y
+    apt-get install -y fish
+    
+    fish --version
+    log_info "Fish installed"
+}
+
+# Install Rust
+install_rust() {
+    log_info "Installing Rust..."
+    
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+    
+    # Add cargo to PATH for all users
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> /etc/profile.d/rust.sh
+    
+    rustup update
+    cargo --version
+    log_info "Rust installed"
+}
+
+# Install GO - FIXED PATHS (no more pain)
+install_go() {
+    log_info "Installing Go 1.23.4 (latest stable)..."
+    
+    # Get latest Go version
+    GO_VERSION="1.23.4"
+    GO_TAR="go${GO_VERSION}.linux-amd64.tar.gz"
+    GO_URL="https://go.dev/dl/${GO_TAR}"
+    
+    # Download Go
+    wget -q --show-progress "$GO_URL" || log_error "Failed to download Go"
+    
+    # Remove old installation completely
+    rm -rf /usr/local/go
+    
+    # Extract to /usr/local
+    tar -C /usr/local -xzf "$GO_TAR" || log_error "Failed to extract Go"
+    
+    # Remove the tarball
+    rm -f "$GO_TAR"
+    
+    # Create GOPATH directory structure
+    mkdir -p /root/go/{bin,src,pkg}
+    
+    # CRITICAL: Set up system-wide Go environment
+    cat > /etc/profile.d/go.sh << 'EOF'
+# Go environment variables
+export GOROOT=/usr/local/go
+export GOPATH=$HOME/go
+export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
+EOF
+    
+    # Source it for current session
+    source /etc/profile.d/go.sh
+    
+    # Also add to fish shell config
+    mkdir -p /etc/fish/conf.d
+    cat > /etc/fish/conf.d/go.fish << 'EOF'
+# Go environment for Fish shell
+set -gx GOROOT /usr/local/go
+set -gx GOPATH $HOME/go
+set -gx PATH $PATH $GOROOT/bin $GOPATH/bin
+EOF
+    
+    # For root's fish config
+    mkdir -p /root/.config/fish
+    echo 'set -gx GOPATH $HOME/go' >> /root/.config/fish/config.fish
+    echo 'set -gx PATH $PATH /usr/local/go/bin $GOPATH/bin' >> /root/.config/fish/config.fish
+    
+    # For ubuntu user if exists
+    if id "ubuntu" &>/dev/null; then
+        mkdir -p /home/ubuntu/.config/fish
+        echo 'set -gx GOPATH $HOME/go' >> /home/ubuntu/.config/fish/config.fish
+        echo 'set -gx PATH $PATH /usr/local/go/bin $GOPATH/bin' >> /home/ubuntu/.config/fish/config.fish
+        chown -R ubuntu:ubuntu /home/ubuntu/.config
+    fi
+    
+    # For current sudo user
+    if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+        USER_HOME=$(eval echo ~$SUDO_USER)
+        mkdir -p "$USER_HOME/.config/fish"
+        echo 'set -gx GOPATH $HOME/go' >> "$USER_HOME/.config/fish/config.fish"
+        echo 'set -gx PATH $PATH /usr/local/go/bin $GOPATH/bin' >> "$USER_HOME/.config/fish/config.fish"
+    fi
+    
+    # Verify installation
+    /usr/local/go/bin/go version || log_error "Go installation failed"
+    
+    # Test go mod init (critical for verifying path setup)
+    cd /tmp
+    mkdir -p go-test && cd go-test
+    /usr/local/go/bin/go mod init test 2>/dev/null || true
+    cd / && rm -rf /tmp/go-test
+    
+    log_info "Go ${GO_VERSION} installed successfully"
+    log_info "GOROOT: /usr/local/go"
+    log_info "GOPATH: /root/go"
+}
+
+# Install all cargo packages
+install_cargo_pkgs() {
+    log_info "Installing cargo packages..."
+    
+    cargo install eza
+    cargo install fd-find
+    cargo install starship
+    cargo install ripgrep
+    cargo install cfonts
+    cargo install artem
+    cargo install bat
+    cargo install lolcrab
+    cargo install bottom
+    cargo install du-dust
+    cargo install tokei
+    cargo install quagga
+    
+    log_info "Cargo packages installed"
+}
+
+# Setup Starship
+setup_starship() {
+    log_info "Setting up Starship..."
+    
+    mkdir -p ~/.config/fish ~/.config
+    
+    # Create fish config with starship init
+    cat > ~/.config/fish/config.fish << 'EOF'
+starship init fish | source
+uv generate-shell-completion fish | source
+uvx --generate-shell-completion fish | source
+EOF
+    
+    # Download starship preset
+    curl -fsSL https://raw.githubusercontent.com/starship/starship/master/presets/pure-preset.toml -o ~/.config/starship.toml 2>/dev/null || true
+    
+    log_info "Starship configured"
+}
+
+# Install UV and Bun
+install_uv_bun() {
+    log_info "Installing UV..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    
+    log_info "Installing Bun..."
+    curl -fsSL https://bun.sh/install | bash
+    
+    # Add to fish config
+    echo 'uv generate-shell-completion fish | source' >> ~/.config/fish/config.fish
+    echo 'uvx --generate-shell-completion fish | source' >> ~/.config/fish/config.fish
+    
+    log_info "UV and Bun installed"
+}
+
+# Install WITR
+install_witr() {
+    log_info "Installing WITR..."
+    curl -fsSL https://raw.githubusercontent.com/pranshuparmar/witr/main/install.sh | bash
+    log_info "WITR installed"
+}
+
+# Set Fish as default shell
+set_fish_default() {
+    if command -v fish &>/dev/null; then
+        log_info "Setting Fish as default shell..."
+        chsh -s "$(command -v fish)" root 2>/dev/null || true
+        if id "ubuntu" &>/dev/null; then
+            chsh -s "$(command -v fish)" ubuntu 2>/dev/null || true
+        fi
+        if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+            chsh -s "$(command -v fish)" "$SUDO_USER" 2>/dev/null || true
+        fi
+    fi
+}
+
+# Final verification
+verify_install() {
+    log_info "Verifying installations..."
+    
+    echo ""
+    echo "========================================="
+    echo "INSTALLED VERSIONS:"
+    echo "========================================="
+    
+    command -v fish && fish --version || echo "✗ Fish not found"
+    command -v cargo && cargo --version || echo "✗ Rust not found"
+    command -v go && go version || echo "✗ Go not found"
+    command -v starship && starship --version || echo "✗ Starship not found"
+    command -v uv && uv --version || echo "✗ UV not found"
+    command -v bun && bun --version || echo "✗ Bun not found"
+    command -v eza && eza --version || echo "✗ Eza not found"
+    command -v bat && bat --version || echo "✗ Bat not found"
+    
+    echo "========================================="
+    
+    # Show Go paths
+    if command -v go &>/dev/null; then
+        echo ""
+        echo "Go Environment:"
+        echo "  GOROOT: $(go env GOROOT)"
+        echo "  GOPATH: $(go env GOPATH)"
+        echo "  PATH includes: $(go env GOBIN)"
+    fi
+}
+
+# Main
+main() {
+    check_root
+    
+    log_info "Starting UNATTENDED installation (all prompts auto-accepted)"
+    echo ""
+    
+    configure_apt
+    update_system
+    install_base
+    install_fish
+    install_rust
+    install_go              # <- GO added here with proper paths
+    install_cargo_pkgs
+    setup_starship
+    install_uv_bun
+    install_witr
+    
+    set_fish_default
+    verify_install
+    
+    echo ""
+    log_info "✅ INSTALLATION COMPLETE!"
+    echo ""
+    echo "Go is properly configured:"
+    echo "  - Run 'go version' to verify"
+    echo "  - Run 'go env' to see all paths"
+    echo "  - Your GOPATH is ~/go"
+    echo ""
+    echo "Quick commands after logging in:"
+    echo "  eza --long"
+    echo "  go version"
+    echo "  starship prompt"
+    echo "  uv --help"
+    echo "  bun --version"
+    echo "  wormhole send"
+    echo "  witr send"
+    echo ""
+    log_info "Restart your shell or run: exec fish"
+}
+
+# Run it
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
