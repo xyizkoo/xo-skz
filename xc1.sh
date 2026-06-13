@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Complete System Setup Script - Debian 12 Optimized (with Homebrew)
-# Usage: curl -sSL https://your-server.com/setup.sh | sudo bash
+# Usage: curl -sSL https://your-server.com/setup.sh | bash
 #
 
 set -euo pipefail
@@ -23,13 +23,6 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
-
-# Check root
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "Must be root. Use: sudo bash $0"
-    fi
-}
 
 # Configure apt for full auto-yes
 configure_apt() {
@@ -303,8 +296,6 @@ verify_install() {
 
 # Main
 main() {
-    check_root
-    
     log_info "Starting UNATTENDED installation on Debian 12 (Bookworm) with Homebrew"
     echo ""
     
@@ -355,7 +346,10 @@ main() {
     log_info "Restart your shell or run: exec fish"
 }
 
-# Run it
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Run it - fixed for curl pipe
+if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
-fi
+else
+    # Running from curl pipe or sourced
+    main "$@"
+fixc1 fix
