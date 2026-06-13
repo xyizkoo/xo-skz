@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# Complete System Setup Script - Debian 12 Optimized (with Homebrew at the end)
+# Complete System Setup Script - Debian 12 (Bookworm) Optimized
+# Based on current docs as of 2026
 # Usage: curl -sSL https://your-server.com/setup.sh | bash
 #
 
@@ -33,13 +34,21 @@ run_with_sudo() {
     fi
 }
 
+# Get current user (for non-root installs)
+CURRENT_USER=$(whoami)
+log_info "Running as user: $CURRENT_USER"
+
+# ============================================
+# SYSTEM SETUP
+# ============================================
+
 # Configure apt for full auto-yes
 configure_apt() {
     log_info "Configuring apt for unattended installation..."
     
-    run_with_sudo bash -c 'echo "APT::Get::Assume-Yes \"true\";" > /etc/apt/apt.conf.d/00autoaccept' 2>/dev/null || true
-    run_with_sudo bash -c 'echo "APT::Get::force-yes \"true\";" >> /etc/apt/apt.conf.d/00autoaccept' 2>/dev/null || true
-    run_with_sudo bash -c 'echo "DPkg::Options {\"--force-confdef\";\"--force-confold\";};" > /etc/apt/apt.conf.d/99force-conf' 2>/dev/null || true
+    run_with_sudo bash -c 'echo "APT::Get::Assume-Yes \"true\";" > /etc/apt/apt.conf.d/00autoaccept'
+    run_with_sudo bash -c 'echo "APT::Get::force-yes \"true\";" >> /etc/apt/apt.conf.d/00autoaccept'
+    run_with_sudo bash -c 'echo "DPkg::Options {\"--force-confdef\";\"--force-confold\";};" > /etc/apt/apt.conf.d/99force-conf'
 }
 
 # Update system
@@ -61,235 +70,437 @@ install_base() {
         wget curl gnupg software-properties-common \
         git build-essential unzip zip gpg-agent \
         ca-certificates sudo magic-wormhole shellcheck \
-        openssh-server \
-        file procps 2>/dev/null || true
-        
+        openssh-server file procps lsb-release
     log_info "Base packages installed"
 }
 
-# Install Fish shell - DEBIAN 12 SPECIFIC
+# ============================================
+# FISH SHELL (Debian 12 specific)
+# ============================================
 install_fish() {
     log_info "Installing Fish shell v4 on Debian 12..."
     
     if command -v fish &>/dev/null; then
         log_info "Fish already installed"
+        fish --version
         return 0
     fi
     
-    # Debian 12 doesn't use PPAs - use OBS repository instead
-    run_with_sudo bash -c 'echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/4/Debian_12/ /" | tee /etc/apt/sources.list.d/shells:fish:release:4.list' 2>/dev/null || true
-    curl -fsSL https://download.opensuse.org/repositories/shells:fish:release:4/Debian_12/Release.key | run_with_sudo gpg --dearmor | run_with_sudo tee /etc/apt/trusted.gpg.d/shells_fish_release_4.gpg > /dev/null 2>&1 || true
-    run_with_sudo apt-get update -y 2>/dev/null || true
-    run_with_sudo apt-get install -y fish 2>/dev/null || true
+    # Debian 12 requires OBS repository for latest Fish (no PPA support) [citation:7]
+    run_with_sudo bash -c 'echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/4/Debian_12/ /" | tee /etc/apt/sources.list.d/shells:fish:release:4.list'
+    curl -fsSL https://download.opensuse.org/repositories/shells:fish:release:4/Debian_12/Release.key | run_with_sudo gpg --dearmor | run_with_sudo tee /etc/apt/trusted.gpg.d/shells_fish_release_4.gpg > /dev/null
+    run_with_sudo apt-get update -y
+    run_with_sudo apt-get install -y fish
     
+    log_info "Fish installed successfully"
     fish --version
-    log_info "Fish installed"
 }
 
-# Install Rust
+# ============================================
+# RUST INSTALLATION
+# ============================================
 install_rust() {
     log_info "Installing Rust on Debian 12..."
     
     if [[ -f "$HOME/.cargo/bin/cargo" ]]; then
         log_info "Rust already installed"
+        cargo --version
         return 0
     fi
     
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
-    source "$HOME/.cargo/env" 2>/dev/null || true
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
     
-    run_with_sudo bash -c 'echo "export PATH=\"\$HOME/.cargo/bin:\$PATH\"" >> /etc/profile.d/rust.sh' 2>/dev/null || true
+    run_with_sudo bash -c 'echo "export PATH=\"\$HOME/.cargo/bin:\$PATH\"" >> /etc/profile.d/rust.sh'
     
-    rustup update || true
+    rustup update
     cargo --version
-    log_info "Rust installed"
+    log_info "Rust installed successfully"
 }
 
-# Install GO - Debian 12 optimized
+# ============================================
+# GO INSTALLATION (FIXED PATHS)
+# ============================================
 install_go() {
     log_info "Installing Go 1.23.4 on Debian 12..."
     
-    if command -v go &>/dev/null; then
-        log_info "Go already installed"
-        return 0
-    fi
+    # Remove any conflicting Debian Go packages first [citation:1]
+    run_with_sudo apt-get remove -y golang-go golang-1.19-go golang-1.20-go 2>/dev/null || true
+    run_with_sudo rm -rf /usr/local/go 2>/dev/null || true
     
     GO_VERSION="1.23.4"
     GO_TAR="go${GO_VERSION}.linux-amd64.tar.gz"
     GO_URL="https://go.dev/dl/${GO_TAR}"
     
-    run_with_sudo apt-get remove -y golang-go 2>/dev/null || true
+    # Download Go from official source
+    wget -q --show-progress "$GO_URL" || log_error "Failed to download Go"
     
-    wget -q "$GO_URL" || log_error "Failed to download Go"
-    
-    run_with_sudo rm -rf /usr/local/go
+    # Extract to /usr/local (standard location) [citation:1]
     run_with_sudo tar -C /usr/local -xzf "$GO_TAR" || log_error "Failed to extract Go"
     rm -f "$GO_TAR"
     
-    run_with_sudo mkdir -p /root/go/{bin,src,pkg} 2>/dev/null || true
+    # Create GOPATH directory structure for current user
+    mkdir -p "$HOME/go"/{bin,src,pkg}
     
+    # System-wide environment for bash (this is the proper way per Debian docs) [citation:1]
     run_with_sudo bash -c 'cat > /etc/profile.d/go.sh << "EOF"
 export GOROOT=/usr/local/go
 export GOPATH=$HOME/go
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
-EOF' 2>/dev/null || true
+EOF'
     
+    # Fish shell environment
+    run_with_sudo mkdir -p /etc/fish/conf.d
+    run_with_sudo bash -c 'cat > /etc/fish/conf.d/go.fish << "EOF"
+set -gx GOROOT /usr/local/go
+set -gx GOPATH $HOME/go
+set -gx PATH $PATH $GOROOT/bin $GOPATH/bin
+EOF'
+    
+    # Source for current session
+    export GOROOT=/usr/local/go
+    export GOPATH=$HOME/go
+    export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
+    
+    # Add to current user's fish config for persistence
+    mkdir -p "$HOME/.config/fish"
+    
+    # Remove any existing Go lines to avoid duplicates
+    sed -i '/GOROOT/d' "$HOME/.config/fish/config.fish" 2>/dev/null || true
+    sed -i '/GOPATH/d' "$HOME/.config/fish/config.fish" 2>/dev/null || true
+    
+    echo 'set -gx GOROOT /usr/local/go' >> "$HOME/.config/fish/config.fish"
+    echo 'set -gx GOPATH $HOME/go' >> "$HOME/.config/fish/config.fish"
+    echo 'set -gx PATH $PATH $GOROOT/bin $GOPATH/bin' >> "$HOME/.config/fish/config.fish"
+    
+    # Add to .bashrc for current user
+    echo 'export GOROOT=/usr/local/go' >> "$HOME/.bashrc"
+    echo 'export GOPATH=$HOME/go' >> "$HOME/.bashrc"
+    echo 'export PATH=$PATH:$GOROOT/bin:$GOPATH/bin' >> "$HOME/.bashrc"
+    
+    # Verify installation
     /usr/local/go/bin/go version || log_error "Go installation failed"
     
-    log_info "Go installed"
+    log_info "Go ${GO_VERSION} installed successfully"
+    log_info "GOROOT: $GOROOT"
+    log_info "GOPATH: $GOPATH"
 }
 
-# Install all cargo packages
+# ============================================
+# CARGO PACKAGES (Rust tools)
+# ============================================
 install_cargo_pkgs() {
     log_info "Installing cargo packages on Debian 12..."
     
     export PATH="$HOME/.cargo/bin:$PATH"
     
-    cargo install eza 2>/dev/null || true
-    cargo install fd-find 2>/dev/null || true
-    cargo install ripgrep 2>/dev/null || true
-    cargo install cfonts 2>/dev/null || true
-    cargo install artem 2>/dev/null || true
-    cargo install bat 2>/dev/null || true
-    cargo install lolcrab 2>/dev/null || true
-    cargo install bottom 2>/dev/null || true
-    cargo install du-dust 2>/dev/null || true
-    cargo install tokei 2>/dev/null || true
-    cargo install quagga 2>/dev/null || true
-    cargo install starship 2>/dev/null || true
+    local packages=(
+        "eza"
+        "fd-find"
+        "ripgrep"
+        "cfonts"
+        "artem"
+        "bat"
+        "lolcrab"
+        "bottom"
+        "du-dust"
+        "tokei"
+        "quagga"
+        "starship"
+    )
+    
+    for pkg in "${packages[@]}"; do
+        log_info "Installing: $pkg"
+        cargo install "$pkg" || log_warn "Failed to install $pkg"
+    done
     
     log_info "Cargo packages installed"
 }
 
-# Setup Starship
-setup_starship() {
-    log_info "Setting up Starship on Debian 12..."
-    
-    mkdir -p ~/.config/fish ~/.config
-    
-    # Create fish config with all integrations (without Homebrew for now)
-    cat > ~/.config/fish/config.fish << 'EOF' 2>/dev/null || true
-starship init fish | source
-uv generate-shell-completion fish | source
-uvx --generate-shell-completion fish | source
-EOF
-    
-    # Download starship preset
-    curl -fsSL https://raw.githubusercontent.com/starship/starship/master/presets/pure-preset.toml -o ~/.config/starship.toml 2>/dev/null || true
-    
-    log_info "Starship configured"
-}
-
-# Install UV and Bun
+# ============================================
+# UV AND BUN (Python/JS runtimes)
+# ============================================
 install_uv_bun() {
-    log_info "Installing UV on Debian 12..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+    log_info "Installing UV (Python package manager) on Debian 12..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     
-    log_info "Installing Bun on Debian 12..."
-    curl -fsSL https://bun.sh/install | bash 2>/dev/null || true
+    log_info "Installing Bun (JavaScript runtime) on Debian 12..."
+    curl -fsSL https://bun.sh/install | bash
     
     log_info "UV and Bun installed"
 }
 
-# Install WITR
+# ============================================
+# WITR INSTALLATION
+# ============================================
 install_witr() {
     log_info "Installing WITR on Debian 12..."
-    curl -fsSL https://raw.githubusercontent.com/pranshuparmar/witr/main/install.sh | bash 2>/dev/null || true
+    curl -fsSL https://raw.githubusercontent.com/pranshuparmar/witr/main/install.sh | bash
     log_info "WITR installed"
 }
 
-# Install Homebrew (Linuxbrew) - MOVED TO END
-install_homebrew() {
-    log_info "Installing Homebrew (Linuxbrew) on Debian 12..."
+# ============================================
+# DOCKER INSTALLATION (Official Docker CE)
+# ============================================
+install_docker() {
+    log_info "Installing Docker CE on Debian 12 from official repository..."
     
-    if command -v brew &>/dev/null; then
-        log_info "Homebrew already installed"
+    if command -v docker &>/dev/null; then
+        log_info "Docker already installed"
+        docker --version
         return 0
     fi
     
-    log_info "This may take a few minutes... (compiling)"
+    # Remove old Docker packages that conflict with Docker CE [citation:2][citation:10]
+    local old_packages=("docker.io" "docker-doc" "docker-compose" "podman-docker" "containerd" "runc")
+    for pkg in "${old_packages[@]}"; do
+        run_with_sudo apt-get remove -y "$pkg" 2>/dev/null || true
+    done
+    
+    # Install prerequisites [citation:2]
+    run_with_sudo apt-get update -y
+    run_with_sudo apt-get install -y ca-certificates curl
+    
+    # Create keyrings directory
+    run_with_sudo install -m 0755 -d /etc/apt/keyrings
+    
+    # Add Docker's official GPG key (2026 method) [citation:2][citation:10]
+    run_with_sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+    run_with_sudo chmod a+r /etc/apt/keyrings/docker.asc
+    
+    # Add Docker repository - auto-detects Debian 12 "bookworm" [citation:2]
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | run_with_sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Update and install Docker CE with plugins [citation:2]
+    run_with_sudo apt-get update -y
+    run_with_sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    # Start and enable Docker
+    run_with_sudo systemctl enable docker
+    run_with_sudo systemctl start docker
+    
+    # Add current user to docker group (to run without sudo) [citation:2][citation:10]
+    if [[ "$CURRENT_USER" != "root" ]]; then
+        log_info "Adding user $CURRENT_USER to docker group..."
+        run_with_sudo usermod -aG docker "$CURRENT_USER"
+        log_warn "You may need to log out and back in for docker group to take effect"
+    fi
+    
+    # Verify installation
+    docker --version || log_error "Docker installation failed"
+    docker compose version || log_error "Docker Compose installation failed"
+    
+    log_info "Docker CE installed successfully"
+}
+
+# ============================================
+# HOMEBREW (MOVED TO END - SLOW)
+# ============================================
+install_homebrew() {
+    log_info "Installing Homebrew (Linuxbrew) on Debian 12..."
+    log_info "This may take a few minutes..."
+    
+    if command -v brew &>/dev/null; then
+        log_info "Homebrew already installed"
+        brew --version
+        return 0
+    fi
     
     # Non-interactive Homebrew installation
-    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || true
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     
-    # Add Homebrew to PATH for bash
-    run_with_sudo bash -c 'echo "eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"" >> /etc/profile.d/homebrew.sh' 2>/dev/null || true
+    # Add Homebrew to PATH for bash (system-wide)
+    run_with_sudo bash -c 'echo "eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"" >> /etc/profile.d/homebrew.sh'
     
-    # Add Homebrew to PATH for fish shell
-    run_with_sudo mkdir -p /etc/fish/conf.d 2>/dev/null || true
-    run_with_sudo bash -c 'echo "eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)" > /etc/fish/conf.d/homebrew.fish' 2>/dev/null || true
+    # Add Homebrew to PATH for fish shell (proper fish syntax uses eval, not $()) [citation:3]
+    run_with_sudo mkdir -p /etc/fish/conf.d
+    run_with_sudo bash -c 'echo "eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)" > /etc/fish/conf.d/homebrew.fish'
     
-    # Add Homebrew to fish config
-    echo '# Homebrew' >> ~/.config/fish/config.fish 2>/dev/null || true
-    echo 'eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)' >> ~/.config/fish/config.fish 2>/dev/null || true
+    # Add to current user's fish config
+    mkdir -p "$HOME/.config/fish"
+    echo '# Homebrew' >> "$HOME/.config/fish/config.fish"
+    echo 'eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)' >> "$HOME/.config/fish/config.fish"
     
     # Source for current session
     eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" 2>/dev/null || true
     
-    log_info "Homebrew installed"
+    brew --version || log_error "Homebrew installation failed"
+    log_info "Homebrew installed at /home/linuxbrew/.linuxbrew"
 }
 
-# Install fzf via Homebrew (after Homebrew is installed)
+# ============================================
+# FZF INSTALLATION (AFTER HOMEBREW)
+# ============================================
 install_fzf() {
     log_info "Installing fzf via Homebrew..."
     
-    # Check if fzf already installed
     if command -v fzf &>/dev/null; then
         log_info "fzf already installed"
+        fzf --version
         return 0
     fi
     
     # Make sure brew is available
     eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" 2>/dev/null || true
     
-    # Install fzf
-    brew install fzf || true
+    # Install fzf via Homebrew [citation:4][citation:8]
+    brew install fzf
     
-    # Auto-accept the install script
-    if [[ -f /home/linuxbrew/.linuxbrew/opt/fzf/install ]]; then
-        yes | /home/linuxbrew/.linuxbrew/opt/fzf/install || true
+    # Set up shell integration for Fish (current method per fzf docs) [citation:4][citation:8]
+    # The proper command for fish shell is: fzf --fish | source
+    mkdir -p "$HOME/.config/fish"
+    
+    # Check if already added to avoid duplicates
+    if ! grep -q "fzf --fish | source" "$HOME/.config/fish/config.fish" 2>/dev/null; then
+        echo '# fzf key bindings' >> "$HOME/.config/fish/config.fish"
+        echo 'fzf --fish | source' >> "$HOME/.config/fish/config.fish"
     fi
     
     log_info "fzf installed and configured"
+    log_info "fzf version: $(fzf --version)"
 }
 
-# Set Fish as default shell
+# ============================================
+# STARSIP CONFIGURATION
+# ============================================
+setup_starship() {
+    log_info "Setting up Starship prompt on Debian 12..."
+    
+    export PATH="$HOME/.cargo/bin:$PATH"
+    
+    mkdir -p "$HOME/.config/fish" "$HOME/.config"
+    
+    # Download starship preset (pure preset) [citation:4]
+    curl -fsSL https://raw.githubusercontent.com/starship/starship/master/presets/pure-preset.toml -o "$HOME/.config/starship.toml" 2>/dev/null || log_warn "Could not download starship preset"
+    
+    log_info "Starship configured"
+}
+
+# ============================================
+# SET FISH AS DEFAULT SHELL
+# ============================================
 set_fish_default() {
-    if command -v fish &>/dev/null; then
-        log_info "Setting Fish as default shell..."
-        chsh -s "$(command -v fish)" "$(whoami)" 2>/dev/null || true
+    if command -v fish &>/dev/null && [[ "$CURRENT_USER" != "root" ]]; then
+        log_info "Setting Fish as default shell for $CURRENT_USER..."
+        chsh -s "$(command -v fish)" "$CURRENT_USER" 2>/dev/null || log_warn "Could not change shell. Run: chsh -s $(command -v fish)"
     fi
 }
 
-# Verify all installations
+# ============================================
+# VERIFICATION
+# ============================================
 verify_install() {
     log_info "Verifying installations..."
     
     echo ""
     echo "========================================="
-    echo "INSTALLED VERSIONS:"
+    echo "DEBIAN 12 - INSTALLED VERSIONS:"
     echo "========================================="
     
-    command -v fish && fish --version || echo "✗ Fish not found"
-    command -v cargo && cargo --version || echo "✗ Rust not found"
-    command -v go && go version || echo "✗ Go not found"
-    command -v starship && starship --version || echo "✗ Starship not found"
-    command -v uv && uv --version || echo "✗ UV not found"
-    command -v bun && bun --version || echo "✗ Bun not found"
-    command -v eza && eza --version || echo "✗ Eza not found"
-    command -v bat && bat --version || echo "✗ Bat not found"
-    command -v brew && brew --version || echo "✗ Homebrew not found"
-    command -v fzf && fzf --version || echo "✗ fzf not found"
+    # OS version
+    cat /etc/debian_version 2>/dev/null && echo "✓ Debian detected"
+    
+    # Fish
+    if command -v fish &>/dev/null; then
+        echo "✓ Fish: $(fish --version)"
+    else
+        echo "✗ Fish not found"
+    fi
+    
+    # Rust/Cargo
+    if command -v cargo &>/dev/null; then
+        echo "✓ Rust/Cargo: $(cargo --version)"
+    else
+        echo "✗ Rust not found"
+    fi
+    
+    # Go
+    if command -v go &>/dev/null; then
+        echo "✓ Go: $(go version)"
+        echo "    GOROOT: $(go env GOROOT)"
+        echo "    GOPATH: $(go env GOPATH)"
+    else
+        echo "✗ Go not found"
+    fi
+    
+    # Starship
+    if command -v starship &>/dev/null; then
+        echo "✓ Starship: $(starship --version)"
+    else
+        echo "✗ Starship not found"
+    fi
+    
+    # UV
+    if command -v uv &>/dev/null; then
+        echo "✓ UV: $(uv --version)"
+    else
+        echo "✗ UV not found"
+    fi
+    
+    # Bun
+    if command -v bun &>/dev/null; then
+        echo "✓ Bun: $(bun --version)"
+    else
+        echo "✗ Bun not found"
+    fi
+    
+    # Cargo tools
+    for tool in eza bat bottom; do
+        if command -v $tool &>/dev/null; then
+            echo "✓ $tool: installed"
+        else
+            echo "✗ $tool not found"
+        fi
+    done
+    
+    # Docker
+    if command -v docker &>/dev/null; then
+        echo "✓ Docker: $(docker --version)"
+        echo "✓ Docker Compose: $(docker compose version)"
+    else
+        echo "✗ Docker not found"
+    fi
+    
+    # Homebrew
+    if command -v brew &>/dev/null; then
+        echo "✓ Homebrew: $(brew --version | head -1)"
+    else
+        echo "✗ Homebrew not found"
+    fi
+    
+    # fzf
+    if command -v fzf &>/dev/null; then
+        echo "✓ fzf: $(fzf --version)"
+    else
+        echo "✗ fzf not found"
+    fi
+    
+    # WITR
+    if command -v witr &>/dev/null; then
+        echo "✓ WITR: installed"
+    else
+        echo "✗ WITR not found"
+    fi
+    
+    # Wormhole
+    if command -v wormhole &>/dev/null; then
+        echo "✓ Magic Wormhole: installed"
+    else
+        echo "✗ Magic Wormhole not found"
+    fi
     
     echo "========================================="
 }
 
-# Main
+# ============================================
+# MAIN EXECUTION
+# ============================================
 main() {
     log_info "Starting UNATTENDED installation on Debian 12 (Bookworm)"
     echo ""
+    log_info "Fast installations first..."
+    echo ""
     
-    # Fast installations first
     configure_apt
     update_system
     install_base
@@ -300,9 +511,12 @@ main() {
     setup_starship
     install_uv_bun
     install_witr
+    install_docker
     
-    # Slow Homebrew and fzf at the VERY END
-    log_info "Installing slow tools (Homebrew, fzf) - this will take a few minutes..."
+    echo ""
+    log_info "Slow installations (Homebrew, fzf) - this will take a few minutes..."
+    echo ""
+    
     install_homebrew
     install_fzf
     
@@ -310,21 +524,20 @@ main() {
     verify_install
     
     echo ""
+    log_info "========================================="
     log_info "✅ INSTALLATION COMPLETE!"
+    log_info "========================================="
     echo ""
-    echo "Installed components:"
-    echo "  ✓ Fish shell v4"
-    echo "  ✓ Rust + Cargo tools"
-    echo "  ✓ Go 1.23.4"
-    echo "  ✓ Starship prompt"
-    echo "  ✓ UV (Python package manager)"
-    echo "  ✓ Bun (JavaScript runtime)"
-    echo "  ✓ WITR (file transfer)"
-    echo "  ✓ Homebrew (Linuxbrew)"
-    echo "  ✓ fzf (fuzzy finder)"
+    log_info "To use Go immediately in this terminal:"
+    echo "  export GOROOT=/usr/local/go"
+    echo "  export GOPATH=\$HOME/go"
+    echo "  export PATH=\$PATH:\$GOROOT/bin:\$GOPATH/bin"
+    echo ""
+    log_info "To use Docker without sudo (after logging out and back in):"
+    echo "  docker run hello-world"
     echo ""
     log_info "Restart your shell or run: exec fish"
 }
 
-# Run it
+# Run main if script is executed directly
 main "$@"
