@@ -1,3 +1,5 @@
+<img src="https://res.cloudinary.com/dsec3pqkf/image/upload/v1781369198/5.gif" alt="description">
+
 Here's a complete, copy-paste-ready markdown tutorial for downloading YouTube playlists using Firefox cookies with the fast progressive method.
 
 ````markdown
