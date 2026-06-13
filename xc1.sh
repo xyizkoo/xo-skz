@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Complete System Setup Script - Debian 12 Optimized
+# Complete System Setup Script - Debian 12 Optimized (with Homebrew)
 # Usage: curl -sSL https://your-server.com/setup.sh | sudo bash
 #
 
@@ -59,11 +59,52 @@ install_base() {
         wget curl gnupg software-properties-common \
         git build-essential unzip zip gpg-agent \
         ca-certificates sudo magic-wormhole shellcheck \
-        openssh-server
+        openssh-server \
+        file procps
+        
     log_info "Base packages installed"
 }
 
-# Install Fish shell - DEBIAN 12 SPECIFIC (no PPA)
+# Install Homebrew (Linuxbrew) - FIXED
+install_homebrew() {
+    log_info "Installing Homebrew (Linuxbrew) on Debian 12..."
+    
+    # Non-interactive Homebrew installation
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    
+    # Add Homebrew to PATH for bash
+    echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> /etc/profile.d/homebrew.sh
+    
+    # Add Homebrew to PATH for fish shell
+    mkdir -p /etc/fish/conf.d
+    echo 'eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)' > /etc/fish/conf.d/homebrew.fish
+    
+    # Source for current session
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+    
+    # Verify installation
+    brew --version || log_error "Homebrew installation failed"
+    
+    log_info "Homebrew installed successfully at /home/linuxbrew/.linuxbrew"
+}
+
+# Install fzf via Homebrew (as in original script)
+install_fzf() {
+    log_info "Installing fzf via Homebrew..."
+    
+    # Install fzf
+    brew install fzf
+    
+    # Auto-accept the install script
+    yes | /home/linuxbrew/.linuxbrew/opt/fzf/install
+    
+    # fzf_key_bindings is automatically set up by the install script
+    # No need for separate command
+    
+    log_info "fzf installed and configured"
+}
+
+# Install Fish shell - DEBIAN 12 SPECIFIC
 install_fish() {
     log_info "Installing Fish shell v4 on Debian 12..."
     
@@ -131,11 +172,11 @@ EOF
     echo 'set -gx GOPATH $HOME/go' >> /root/.config/fish/config.fish
     echo 'set -gx PATH $PATH /usr/local/go/bin $GOPATH/bin' >> /root/.config/fish/config.fish
     
-    if id "ubuntu" &>/dev/null; then
-        mkdir -p /home/ubuntu/.config/fish
-        echo 'set -gx GOPATH $HOME/go' >> /home/ubuntu/.config/fish/config.fish
-        echo 'set -gx PATH $PATH /usr/local/go/bin $GOPATH/bin' >> /home/ubuntu/.config/fish/config.fish
-        chown -R ubuntu:ubuntu /home/ubuntu/.config
+    if id "debian" &>/dev/null; then
+        mkdir -p /home/debian/.config/fish
+        echo 'set -gx GOPATH $HOME/go' >> /home/debian/.config/fish/config.fish
+        echo 'set -gx PATH $PATH /usr/local/go/bin $GOPATH/bin' >> /home/debian/.config/fish/config.fish
+        chown -R debian:debian /home/debian/.config
     fi
     
     /usr/local/go/bin/go version || log_error "Go installation failed"
@@ -143,7 +184,7 @@ EOF
     log_info "Go ${GO_VERSION} installed successfully on Debian 12"
 }
 
-# Install cargo packages (starship via cargo, not apt for latest version)
+# Install all cargo packages
 install_cargo_pkgs() {
     log_info "Installing cargo packages on Debian 12..."
     
@@ -162,22 +203,28 @@ install_cargo_pkgs() {
     log_info "Cargo packages installed"
 }
 
-# Setup Starship (install via cargo for latest version)
+# Setup Starship
 setup_starship() {
     log_info "Setting up Starship on Debian 12..."
     
-    # Install starship via cargo (gets latest version)
+    # Install starship via cargo
     cargo install starship
     
     mkdir -p ~/.config/fish ~/.config
     
+    # Create fish config with all integrations
     cat > ~/.config/fish/config.fish << 'EOF'
 starship init fish | source
 uv generate-shell-completion fish | source
 uvx --generate-shell-completion fish | source
+# Homebrew
+eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)
 EOF
     
-    # Download starship preset (pure preset)
+    # Add Homebrew to root's fish config
+    echo 'eval (/home/linuxbrew/.linuxbrew/bin/brew shellenv)' >> /root/.config/fish/config.fish
+    
+    # Download starship preset
     curl -fsSL https://raw.githubusercontent.com/starship/starship/master/presets/pure-preset.toml -o ~/.config/starship.toml 2>/dev/null || true
     
     log_info "Starship configured"
@@ -190,9 +237,6 @@ install_uv_bun() {
     
     log_info "Installing Bun on Debian 12..."
     curl -fsSL https://bun.sh/install | bash
-    
-    echo 'uv generate-shell-completion fish | source' >> ~/.config/fish/config.fish
-    echo 'uvx --generate-shell-completion fish | source' >> ~/.config/fish/config.fish
     
     log_info "UV and Bun installed"
 }
@@ -227,10 +271,11 @@ verify_install() {
     echo "DEBIAN 12 - INSTALLED VERSIONS:"
     echo "========================================="
     
-    # OS detection
-    cat /etc/debian_version 2>/dev/null && echo "Debian detected" || echo "Not Debian?"
+    cat /etc/debian_version 2>/dev/null && echo "✓ Debian detected"
     
     command -v fish && fish --version || echo "✗ Fish not found"
+    command -v brew && brew --version || echo "✗ Homebrew not found"
+    command -v fzf && fzf --version || echo "✗ fzf not found"
     command -v cargo && cargo --version || echo "✗ Rust not found"
     command -v go && go version || echo "✗ Go not found"
     command -v starship && starship --version || echo "✗ Starship not found"
@@ -238,6 +283,7 @@ verify_install() {
     command -v bun && bun --version || echo "✗ Bun not found"
     command -v eza && eza --version || echo "✗ Eza not found"
     command -v bat && bat --version || echo "✗ Bat not found"
+    command -v witr && witr --version 2>/dev/null || echo "✗ WITR not found"
     
     echo "========================================="
     
@@ -247,23 +293,34 @@ verify_install() {
         echo "  GOROOT: $(go env GOROOT)"
         echo "  GOPATH: $(go env GOPATH)"
     fi
+    
+    if command -v brew &>/dev/null; then
+        echo ""
+        echo "Homebrew Environment:"
+        brew --prefix
+    fi
 }
 
 # Main
 main() {
     check_root
     
-    log_info "Starting UNATTENDED installation on Debian 12 (Bookworm)"
+    log_info "Starting UNATTENDED installation on Debian 12 (Bookworm) with Homebrew"
     echo ""
     
     configure_apt
     update_system
     install_base
-    install_fish      # Debian-specific fish installation
+    
+    # Install Homebrew first (needed for fzf)
+    install_homebrew
+    install_fzf               # fzf installed via Homebrew
+    
+    install_fish
     install_rust
     install_go
     install_cargo_pkgs
-    setup_starship
+    setup_starship            # This now includes Homebrew in fish config
     install_uv_bun
     install_witr
     
@@ -273,14 +330,27 @@ main() {
     echo ""
     log_info "✅ INSTALLATION COMPLETE on Debian 12!"
     echo ""
+    echo "Installed components:"
+    echo "  ✓ Homebrew (Linuxbrew)"
+    echo "  ✓ fzf (fuzzy finder)"
+    echo "  ✓ Fish shell v4"
+    echo "  ✓ Rust + Cargo tools"
+    echo "  ✓ Go 1.23.4"
+    echo "  ✓ Starship prompt"
+    echo "  ✓ UV (Python package manager)"
+    echo "  ✓ Bun (JavaScript runtime)"
+    echo "  ✓ WITR (file transfer)"
+    echo ""
     echo "Quick commands after logging in:"
-    echo "  eza --long"
-    echo "  go version"
-    echo "  starship prompt"
-    echo "  uv --help"
-    echo "  bun --version"
-    echo "  wormhole send"
-    echo "  witr send"
+    echo "  brew list                  # Show Homebrew packages"
+    echo "  fzf --version             # Fuzzy finder"
+    echo "  eza --long                # Modern ls"
+    echo "  go version                # Go"
+    echo "  starship prompt           # Custom prompt"
+    echo "  uv --help                 # Python package manager"
+    echo "  bun --version             # JavaScript runtime"
+    echo "  wormhole send             # Secure file transfer"
+    echo "  witr send                 # WITR transfer"
     echo ""
     log_info "Restart your shell or run: exec fish"
 }
